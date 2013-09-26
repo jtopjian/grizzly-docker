@@ -1,0 +1,80 @@
+--- driver.py.orig	2013-09-24 15:11:49.000000000 -0600
++++ driver.py	2013-09-26 07:39:45.561961527 -0600
+@@ -38,12 +38,15 @@
+ from nova.virt.docker import hostinfo
+ from nova.virt import driver
+ 
++from nova.network import linux_net
++
+ 
+ docker_opts = [
+     cfg.IntOpt('docker_registry_default_port',
+                default=5042,
+                help=_('Default TCP port to find the '
+                       'docker-registry container')),
++    cfg.BoolOpt('fake_network', default=False),
+ ]
+ 
+ CONF = cfg.CONF
+@@ -205,7 +208,8 @@
+         container_id = self.find_container_by_name(instance['name']).get('id')
+         if not container_id:
+             return
+-        network_info = network_info[0]['network']
++        #network_info = network_info[0]['network']
++        network_info = network_info[0]
+         netns_path = '/var/run/netns'
+         if not os.path.exists(netns_path):
+             utils.execute(
+@@ -222,8 +226,9 @@
+         rand = random.randint(0, 100000)
+         if_local_name = 'pvnetl{0}'.format(rand)
+         if_remote_name = 'pvnetr{0}'.format(rand)
+-        bridge = network_info['bridge']
+-        ip = self._find_fixed_ip(network_info['subnets'])
++        bridge = network_info[0]['bridge']
++        #ip = self._find_fixed_ip(network_info['subnets'])
++        ip = network_info[1]['ips'][0]['ip']
+         if not ip:
+             raise RuntimeError(_('Cannot set fixed ip'))
+         undo_mgr = utils.UndoManager()
+@@ -236,6 +241,14 @@
+                 'ip', 'link', 'delete', if_local_name, run_as_root=True))
+             # NOTE(samalba): Deleting the interface will delete all associated
+             # resources (remove from the bridge, its pair, etc...)
++
++            linux_net.LinuxBridgeInterfaceDriver.ensure_vlan_bridge(
++                                        network_info[0]['vlan'],
++                                        network_info[0]['bridge'],
++                                        network_info[0]['bridge_interface'],
++                                        None,
++                                        network_info[1]['mac'])
++
+             utils.execute(
+                 'brctl', 'addif', bridge, if_local_name,
+                 run_as_root=True)
+@@ -307,6 +320,7 @@
+                     instance_id=instance['name'])
+         self.docker.start_container(container_id)
+         try:
++            LOG.info("Network info: %s" % network_info)
+             self._setup_network(instance, network_info)
+         except Exception as e:
+             msg = _('Cannot setup network: {0}')
+@@ -320,6 +334,9 @@
+             return
+         self.docker.stop_container(container_id)
+         self.docker.destroy_container(container_id)
++        utils.execute(
++            'ip', 'netns', 'delete', container_id,
++            run_as_root=True)
+ 
+     def reboot(self, context, instance, network_info, reboot_type,
+                block_device_info=None, bad_volumes_callback=None):
+@@ -390,3 +407,6 @@
+                           expected_state=task_states.IMAGE_PENDING_UPLOAD)
+         headers = {'X-Meta-Glance-Image-Id': image_href}
+         self.docker.push_repository(name, headers=headers)
++
++    def legacy_nwinfo(self):
++      return True
